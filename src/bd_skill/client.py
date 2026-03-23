@@ -1,3 +1,21 @@
+"""
+Async client wrapper around the Black Duck REST API.
+
+``BlackDuckClient`` is the central service class.  It wraps the synchronous
+``blackduck`` SDK library, running every SDK call in a thread pool so the
+MCP tool server stays non-blocking.  Key responsibilities:
+
+- **Name resolution**: translates user-supplied project/version names into
+  Black Duck resource dicts (with fuzzy "did you mean?" suggestions on
+  mismatch).
+- **Caching**: two-layer cache (name lookups + full response dicts) avoids
+  redundant API calls within a configurable TTL window.
+- **Rate limiting**: a token-bucket throttle caps outbound request rate to
+  stay within server-side limits.
+- **Normalization**: raw JSON payloads from the API are converted into typed
+  Pydantic models before being returned to the caller.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -34,7 +52,13 @@ from .throttle import RequestThrottle
 logger = logging.getLogger(__name__)
 
 
+# ── Custom exceptions ─────────────────────────────────────────
+# Each exception carries enough context for the MCP tool layer to return
+# a helpful error message, including fuzzy-match suggestions where applicable.
+
+
 class ProjectNotFoundError(Exception):
+    """Raised when no project matches the user-supplied name."""
     def __init__(self, name: str, suggestions: list[str] | None = None):
         self.name = name
         self.suggestions = suggestions or []
@@ -42,6 +66,7 @@ class ProjectNotFoundError(Exception):
 
 
 class VersionNotFoundError(Exception):
+    """Raised when no version matches within a resolved project."""
     def __init__(self, name: str, suggestions: list[str] | None = None):
         self.name = name
         self.suggestions = suggestions or []
@@ -49,18 +74,34 @@ class VersionNotFoundError(Exception):
 
 
 class ComponentNotFoundError(Exception):
+    """Raised when a BOM component name cannot be found in a version."""
     def __init__(self, name: str):
         self.name = name
         super().__init__(f"Component not found: {name}")
 
 
 class VulnerabilityNotFoundError(Exception):
+    """Raised when a CVE/BDSA ID does not exist in Black Duck."""
     def __init__(self, vuln_id: str):
         self.vuln_id = vuln_id
         super().__init__(f"Vulnerability not found: {vuln_id}")
 
 
 class BlackDuckClient:
+    """High-level async wrapper around the Black Duck REST API.
+
+    All public methods return plain dicts (Pydantic model_dump output) that
+    are ready for JSON serialization by the MCP tool layer.
+
+    Args:
+        url: Base URL of the Black Duck server (e.g. ``https://bd.example.com``).
+        token: API bearer token for authentication.
+        verify_ssl: Whether to verify TLS certificates.
+        timeout: HTTP request timeout in seconds.
+        cache_ttl: Time-to-live in seconds for cached responses and name lookups.
+        max_rps: Maximum outbound requests per second (rate-limiter ceiling).
+    """
+
     def __init__(
         self,
         url: str,
@@ -89,7 +130,12 @@ class BlackDuckClient:
         return await asyncio.to_thread(fn, *args, **kwargs)
 
     async def _get_items_direct(self, url: str, limit: int = 1000) -> list:
-        """Fetch all items from a paginated BD endpoint using the session directly."""
+        """Fetch all items from a paginated BD endpoint using the session directly.
+
+        Iterates through pages until every item has been collected.  This is
+        used for endpoints where the SDK's ``get_resource`` helper doesn't
+        provide the raw response (e.g. vulnerable-bom-components).
+        """
         all_items: list = []
         offset = 0
         while True:
@@ -101,6 +147,7 @@ class BlackDuckClient:
             data = resp.json()
             items = data.get("items", [])
             all_items.extend(items)
+            # Stop when we've collected everything or no more items arrived.
             if len(all_items) >= data.get("totalCount", len(all_items)):
                 break
             if not items:
@@ -109,10 +156,17 @@ class BlackDuckClient:
         return all_items
 
     async def _resolve_project(self, project_name: str) -> dict:
+        """Resolve a project name to its full BD resource dict.
+
+        Checks the name cache first, then queries the API with an exact-name
+        filter.  If no match is found, falls back to fetching all projects
+        and raises ``ProjectNotFoundError`` with fuzzy suggestions.
+        """
         cached = self.cache.get_project(project_name.lower())
         if cached:
             return cached
 
+        # Ask BD to filter server-side by name for an efficient lookup.
         projects = await self._bd_call(
             self.client.get_resource, "projects",
             params={"q": f"name:{project_name}"},
@@ -122,12 +176,19 @@ class BlackDuckClient:
                 self.cache.put_project(project_name.lower(), project)
                 return project
 
+        # No exact match — fetch all project names for fuzzy suggestions.
         all_projects = await self._bd_call(self.client.get_resource, "projects")
         all_names = [p["name"] for p in all_projects]
         suggestions = fuzzy_match(project_name, all_names, max_results=3)
         raise ProjectNotFoundError(project_name, suggestions)
 
     async def _resolve_version(self, project: dict, version_name: str | None) -> dict:
+        """Resolve a version name within a project to its BD resource dict.
+
+        If *version_name* is ``None`` or ``"_latest"``, returns the version
+        with the most recent ``createdAt`` timestamp.  Otherwise performs a
+        case-insensitive match against all versions in the project.
+        """
         project_lower = project["name"].lower()
 
         if version_name and version_name != "_latest":
@@ -142,6 +203,7 @@ class BlackDuckClient:
         if not versions:
             raise VersionNotFoundError(version_name or "_latest", [])
 
+        # When no specific version is requested, pick the newest one.
         if version_name is None or version_name == "_latest":
             latest = max(versions, key=lambda v: v.get("createdAt", ""))
             return latest
@@ -151,6 +213,7 @@ class BlackDuckClient:
                 self.cache.put_version(project_lower, version_name.lower(), version)
                 return version
 
+        # No match — provide fuzzy suggestions.
         suggestions = fuzzy_match(
             version_name,
             [v["versionName"] for v in versions],
@@ -159,6 +222,7 @@ class BlackDuckClient:
         raise VersionNotFoundError(version_name, suggestions)
 
     def _is_latest(self, version: dict, all_versions: list[dict] | None = None) -> bool:
+        """Check whether *version* is the most recently created in *all_versions*."""
         if all_versions is None:
             return False
         if not all_versions:
@@ -170,6 +234,7 @@ class BlackDuckClient:
 
     @staticmethod
     def _normalize_vuln_component(vc: dict) -> VulnerableComponentSummary:
+        """Convert a raw vulnerable-bom-component JSON object into a typed model."""
         vr = vc.get("vulnerabilityWithRemediation", {})
         desc = vr.get("description", "")
         return VulnerableComponentSummary(
@@ -185,6 +250,7 @@ class BlackDuckClient:
 
     @staticmethod
     def _normalize_bom_component(comp: dict) -> BomComponentSummary:
+        """Convert a raw BOM component JSON object into a typed model."""
         licenses = []
         license_risk = "UNKNOWN"
         for lic in comp.get("licenses", []):
@@ -215,6 +281,7 @@ class BlackDuckClient:
         limit: int = 20,
         offset: int = 0,
     ) -> dict:
+        """List projects, optionally filtered by a name substring."""
         cached = self.response_cache.get("list_projects",
             query=(query or "").lower(), limit=limit, offset=offset)
         if cached is not _SENTINEL:
@@ -251,6 +318,7 @@ class BlackDuckClient:
         return result
 
     async def get_project(self, project_name: str) -> dict:
+        """Get details for a single project, including its version count."""
         cached = self.response_cache.get("get_project",
             project_name=project_name.lower())
         if cached is not _SENTINEL:
@@ -283,6 +351,7 @@ class BlackDuckClient:
         limit: int = 20,
         offset: int = 0,
     ) -> dict:
+        """List versions of a project, sorted newest-first."""
         cached = self.response_cache.get("list_versions",
             project_name=project_name.lower(), limit=limit, offset=offset)
         if cached is not _SENTINEL:
@@ -320,6 +389,7 @@ class BlackDuckClient:
     async def get_risk_profile(
         self, project_name: str, version_name: str | None,
     ) -> dict:
+        """Get the 5-dimensional risk profile for a project version."""
         cached = self.response_cache.get("get_risk_profile",
             project_name=project_name.lower(), version_name=(version_name or "_latest").lower())
         if cached is not _SENTINEL:
@@ -357,6 +427,7 @@ class BlackDuckClient:
     async def get_policy_status(
         self, project_name: str, version_name: str | None,
     ) -> dict:
+        """Get overall policy compliance status and violation count."""
         cached = self.response_cache.get("get_policy_status",
             project_name=project_name.lower(), version_name=(version_name or "_latest").lower())
         if cached is not _SENTINEL:
@@ -394,6 +465,7 @@ class BlackDuckClient:
         limit: int = 20,
         offset: int = 0,
     ) -> dict:
+        """List vulnerable BOM components with optional severity/status filters."""
         cached = self.response_cache.get("get_vulnerable_components",
             project_name=project_name.lower(), version_name=(version_name or "_latest").lower(),
             severity=sorted(severity) if severity else None,
@@ -410,6 +482,9 @@ class BlackDuckClient:
             f"{version_url}/vulnerable-bom-components",
         )
 
+        # Filter client-side and apply manual pagination because the
+        # vulnerable-bom-components endpoint doesn't support server-side
+        # filtering by severity or remediation status.
         results = []
         total = 0
         for vc in vuln_components:
@@ -452,6 +527,7 @@ class BlackDuckClient:
         version_name: str | None,
         severity: list[str] | None = None,
     ) -> dict:
+        """Count vulnerabilities in a project version, broken down by severity."""
         cached = self.response_cache.get("get_vulnerability_counts",
             project_name=project_name.lower(), version_name=(version_name or "_latest").lower(),
             severity=sorted(severity) if severity else None)
@@ -496,6 +572,7 @@ class BlackDuckClient:
         limit: int = 20,
         offset: int = 0,
     ) -> dict:
+        """List BOM components, optionally searching by component name."""
         cached = self.response_cache.get("get_bom_components",
             project_name=project_name.lower(), version_name=(version_name or "_latest").lower(),
             query=(query or "").lower(), limit=limit, offset=offset)
@@ -534,6 +611,7 @@ class BlackDuckClient:
         return result
 
     async def get_vulnerability_detail(self, vuln_id: str) -> dict:
+        """Get full detail for a CVE or BDSA vulnerability by its ID."""
         cached = self.response_cache.get("get_vulnerability_detail",
             vuln_id=vuln_id.lower())
         if cached is not _SENTINEL:
@@ -573,6 +651,7 @@ class BlackDuckClient:
     async def get_affected_projects(
         self, vuln_id: str, limit: int = 50,
     ) -> dict:
+        """Find which projects/versions are affected by a given vulnerability."""
         cached = self.response_cache.get("get_affected_projects",
             vuln_id=vuln_id.lower(), limit=limit)
         if cached is not _SENTINEL:
@@ -613,6 +692,7 @@ class BlackDuckClient:
     async def get_licenses(
         self, project_name: str, version_name: str | None,
     ) -> dict:
+        """List all licenses in a project version, grouped by risk level."""
         cached = self.response_cache.get("get_licenses",
             project_name=project_name.lower(), version_name=(version_name or "_latest").lower())
         if cached is not _SENTINEL:
@@ -670,6 +750,7 @@ class BlackDuckClient:
     async def get_policy_violations(
         self, project_name: str, version_name: str | None,
     ) -> dict:
+        """List policy violations for a project version."""
         cached = self.response_cache.get("get_policy_violations",
             project_name=project_name.lower(), version_name=(version_name or "_latest").lower())
         if cached is not _SENTINEL:
@@ -709,6 +790,7 @@ class BlackDuckClient:
     async def get_scans(
         self, project_name: str, version_name: str | None,
     ) -> dict:
+        """List code locations (scans) associated with a project version."""
         cached = self.response_cache.get("get_scans",
             project_name=project_name.lower(), version_name=(version_name or "_latest").lower())
         if cached is not _SENTINEL:
@@ -747,6 +829,7 @@ class BlackDuckClient:
         version_name: str | None,
         component_name: str,
     ) -> dict:
+        """Get upgrade recommendation for a specific BOM component."""
         cached = self.response_cache.get("get_upgrade_guidance",
             project_name=project_name.lower(), version_name=(version_name or "_latest").lower(),
             component_name=component_name.lower())
@@ -798,6 +881,7 @@ class BlackDuckClient:
         version_name_1: str,
         version_name_2: str,
     ) -> dict:
+        """Diff the BOMs of two project versions (added/removed/changed components)."""
         cached = self.response_cache.get("compare_versions",
             project_name=project_name.lower(),
             version_name_1=version_name_1.lower(),
@@ -818,6 +902,7 @@ class BlackDuckClient:
             "components", version2, items=True,
         )
 
+        # Index each BOM as {component_name: version_string} for set-based diffing.
         bom1 = {
             c.get("componentName", ""): c.get("componentVersionName", "")
             for c in bom1_raw
