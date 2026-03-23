@@ -3,8 +3,8 @@
     "blackduck": {
       "command": "/Users/peugene/Documents/projects/bd_skill/.venv/bin/bd-skill",
       "env": {
-        "BLACKDUCK_URL": "https://sca.demo.blackduck.com",
-        "BLACKDUCK_TOKEN": "MDRlNWE2ODEtMTMyNC00YWFiLTkxYWMtM2JmYzNhZTMyMTVmOjA2ODQxZTY3LTJhZjEtNDE4Yy04ZjY5LWNkOTdmNTQ0OTJiNw=="
+        "BLACKDUCK_URL": "",
+        "BLACKDUCK_TOKEN": ""
       }
     }
   }
