@@ -766,16 +766,36 @@ class BlackDuckClient:
 
         violations = []
         for comp in components:
-            if comp.get("policyStatus") == "IN_VIOLATION":
-                for rule in comp.get("policyRules", []):
-                    violations.append(PolicyViolationSummary(
-                        component_name=comp.get("componentName", ""),
-                        component_version=comp.get("componentVersionName", ""),
-                        policy_name=rule.get("name", ""),
-                        policy_severity=rule.get("severity", "UNSPECIFIED"),
-                        violation_type=rule.get("category", "COMPONENT"),
-                        description=rule.get("description"),
-                    ).model_dump())
+            if comp.get("policyStatus") != "IN_VIOLATION":
+                continue
+
+            rules = comp.get("policyRules", [])
+
+            # If policyRules not embedded (common with binary scans),
+            # fetch from the component's policy-rules endpoint directly.
+            if not rules:
+                comp_href = comp.get("_meta", {}).get("href", "")
+                if comp_href:
+                    try:
+                        resp = await self._bd_call(
+                            self.client.session.get,
+                            f"{comp_href}/policy-rules",
+                        )
+                        resp.raise_for_status()
+                        data = resp.json()
+                        rules = data.get("items", [])
+                    except Exception:
+                        pass  # Fall through with empty rules
+
+            for rule in rules:
+                violations.append(PolicyViolationSummary(
+                    component_name=comp.get("componentName", ""),
+                    component_version=comp.get("componentVersionName", ""),
+                    policy_name=rule.get("name", ""),
+                    policy_severity=rule.get("severity", "UNSPECIFIED"),
+                    violation_type=rule.get("category", "COMPONENT"),
+                    description=rule.get("description"),
+                ).model_dump())
 
         result = {
             "project_name": project["name"],
