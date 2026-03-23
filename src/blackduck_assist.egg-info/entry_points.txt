@@ -1,0 +1,2 @@
+[console_scripts]
+blackduck-assist = bd_skill.server:main

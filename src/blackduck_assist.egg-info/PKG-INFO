@@ -1,0 +1,10 @@
+Metadata-Version: 2.4
+Name: blackduck-assist
+Version: 0.1.0
+Summary: Black Duck SCA MCP server for Claude Code
+Requires-Python: >=3.11
+Requires-Dist: mcp[cli]>=1.0
+Requires-Dist: blackduck>=1.1.0
+Requires-Dist: thefuzz[speedup]>=0.22
+Requires-Dist: cachetools>=5.3
+Requires-Dist: pydantic>=2.0

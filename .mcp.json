@@ -1,10 +1,10 @@
 {
   "mcpServers": {
     "blackduck": {
-      "command": "/Users/peugene/Documents/projects/bd_skill/.venv/bin/bd-skill",
+      "command": "/Users/peugene/Documents/projects/bd_skill/.venv/bin/blackduck-assist",
       "env": {
-        "BLACKDUCK_URL": "",
-        "BLACKDUCK_TOKEN": ""
+        "BLACKDUCK_URL": "https://sca.demo.blackduck.com",
+        "BLACKDUCK_TOKEN": "YjgwZDJjZmQtNDg3ZC00MzUzLWFkMzMtMjNmZGVlMzY1MzI2OmIzNDE1MjUyLTQ1NzUtNDA4Ni05YTZhLWU1OTJiZTM2M2QyNA=="
       }
     }
   }

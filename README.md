@@ -92,6 +92,40 @@ You should see `blackduck` listed. Start a new Claude Code session and the 16 to
 | `get_component_upgrade_guidance` | Upgrade paths and vulnerability fixes |
 | `compare_versions` | BOM diff between two project versions |
 
+## Slash Commands
+
+Quick-access commands for common operations. Type these directly in Claude Code:
+
+| Command | Usage | Description |
+|---------|-------|-------------|
+| `/list_projects` | `/list_projects [query]` | List all projects on the server. Add a search term to filter by name. Paginates automatically if there are too many to display. |
+| `/project_risk` | `/project_risk <project>` | Show the 5-dimensional risk profile (vulnerability, license, operational, activity, version) for a project. |
+| `/project_vulns` | `/project_vulns <project> [severity]` | List vulnerable components with a severity summary. Optionally filter by `critical`, `high`, `medium`, or `low`. |
+| `/policy_violations` | `/policy_violations <project>` | List all policy violations grouped by policy rule, ordered by severity. |
+
+### Slash Command Examples
+
+```
+/list_projects              # show first 20 projects, with option to page through more
+/list_projects payment       # search for projects matching "payment"
+/project_risk my-app         # risk profile for my-app (auto-resolves latest version)
+/project_vulns my-app critical  # only critical vulnerabilities
+/policy_violations my-app    # policy violations grouped by rule
+```
+
+### Installation
+
+Copy the skill files to your Claude Code skills directory:
+
+```bash
+cp -r skills/list_projects  ~/.claude/skills/
+cp -r skills/project_risk   ~/.claude/skills/
+cp -r skills/project_vulns  ~/.claude/skills/
+cp -r skills/policy_violations ~/.claude/skills/
+```
+
+Restart Claude Code for the commands to appear in `/help`.
+
 ## Usage Examples
 
 Once registered, just ask Claude naturally:
@@ -111,8 +145,16 @@ bd_skill/
 ├── .mcp.json                  # MCP server definition
 ├── pyproject.toml              # Package metadata and entry point
 ├── skills/
-│   └── blackduck/
-│       └── SKILL.md            # Skill instructions and domain knowledge
+│   ├── blackduck/
+│   │   └── SKILL.md            # Skill instructions and domain knowledge
+│   ├── list_projects/
+│   │   └── SKILL.md            # /list_projects slash command
+│   ├── project_risk/
+│   │   └── SKILL.md            # /project_risk slash command
+│   ├── project_vulns/
+│   │   └── SKILL.md            # /project_vulns slash command
+│   └── policy_violations/
+│       └── SKILL.md            # /policy_violations slash command
 └── src/
     └── bd_skill/
         ├── server.py           # MCP server + 16 tool definitions

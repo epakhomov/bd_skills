@@ -173,6 +173,8 @@ class VulnerabilityDetail(BaseModel):
     source: str  # e.g. "NVD", "BDSA"
     workaround: str | None = None
     solution: str | None = None
+    related_vulnerability_id: str | None = None    # cross-ref CVE↔BDSA
+    related_vulnerability_source: str | None = None  # "NVD", "BDSA", "EUVD"
 
 
 class AffectedProjectSummary(BaseModel):
@@ -244,3 +246,99 @@ class VersionComparisonResponse(BaseModel):
     added: list[str]    # components present in v2 but not v1
     removed: list[str]  # components present in v1 but not v2
     changed: list[ComponentDiff]  # components present in both but with different versions
+
+
+class ProjectTagSummary(BaseModel):
+    """A tag associated with a Black Duck project."""
+    name: str
+
+
+class PolicyRuleSummary(BaseModel):
+    """A policy rule configured in the Black Duck system."""
+    name: str
+    description: str | None = None
+    enabled: bool
+    severity: str  # PolicySeverity values; str to tolerate unexpected API values
+    category: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class KBComponentSummary(BaseModel):
+    """A component from the Black Duck Knowledge Base."""
+    component_name: str
+    version: str | None = None
+    description: str | None = None
+    origin_id: str | None = None
+    href: str | None = None
+    license_names: list[str] | None = None
+
+
+class MatchedFileSummary(BaseModel):
+    """A file that matched to a component during scanning."""
+    file_path: str
+    archive_context: str | None = None
+    component_name: str
+    component_version: str | None = None
+    match_type: str | None = None
+    usage: str | None = None
+
+
+class MatchedFilesResponse(BaseModel):
+    """Paginated list of matched files for a project version."""
+    project_name: str
+    version_name: str
+    total_available: int
+    total_returned: int
+    items: list[MatchedFileSummary]
+
+
+class HierarchicalBomComponentSummary(BaseModel):
+    """A BOM component with dependency relationship and origin details."""
+    component_name: str
+    component_version: str
+    origin_name: str | None = None
+    origin_id: str | None = None
+    origin_external_namespace: str | None = None
+    origin_external_id: str | None = None
+    match_types: list[str] | None = None
+    is_direct_dependency: bool | None = None
+    is_transitive_dependency: bool | None = None
+    license_names: list[str]
+    license_risk: LicenseRisk
+    vulnerability_count: int
+    policy_status: PolicyStatusType | None = None
+    component_source: str | None = None
+
+
+class HierarchicalBomResponse(BaseModel):
+    """BOM component listing with dependency hierarchy information."""
+    project_name: str
+    version_name: str
+    total_available: int
+    total_returned: int
+    direct_count: int
+    transitive_count: int
+    items: list[HierarchicalBomComponentSummary]
+
+
+class ReportSummary(BaseModel):
+    """Status and metadata for a generated report."""
+    report_id: str | None = None
+    report_url: str | None = None
+    report_type: str | None = None
+    report_format: str | None = None
+    status: str | None = None
+    created_at: str | None = None
+    finished_at: str | None = None
+    content_type: str | None = None
+    download_url: str | None = None
+
+
+class ReportGenerationResponse(BaseModel):
+    """Response from initiating a report generation."""
+    report_url: str
+    project_name: str
+    version_name: str
+    report_type: str
+    message: str

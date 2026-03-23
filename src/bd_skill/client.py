@@ -31,11 +31,20 @@ from .models import (
     BomComponentsResponse,
     CodeLocationSummary,
     ComponentDiff,
+    HierarchicalBomComponentSummary,
+    HierarchicalBomResponse,
+    KBComponentSummary,
     LicenseEntry,
     LicenseInventory,
+    MatchedFileSummary,
+    MatchedFilesResponse,
+    PolicyRuleSummary,
     PolicyStatusSummary,
     PolicyViolationSummary,
     ProjectSummary,
+    ProjectTagSummary,
+    ReportGenerationResponse,
+    ReportSummary,
     RiskCounts,
     RiskProfile,
     UpgradeGuidance,
@@ -629,6 +638,7 @@ class BlackDuckClient:
                 raise VulnerabilityNotFoundError(vuln_id)
             raise
 
+        related = data.get("relatedVulnerability") or {}
         result = VulnerabilityDetail(
             id=data.get("name", vuln_id),
             title=data.get("title", data.get("name", "")),
@@ -643,6 +653,8 @@ class BlackDuckClient:
             source=data.get("source", "NVD"),
             workaround=data.get("workaround"),
             solution=data.get("solution"),
+            related_vulnerability_id=related.get("name"),
+            related_vulnerability_source=related.get("source"),
         ).model_dump()
         self.response_cache.put(result, "get_vulnerability_detail",
             vuln_id=vuln_id.lower())
@@ -955,4 +967,502 @@ class BlackDuckClient:
             project_name=project_name.lower(),
             version_name_1=version_name_1.lower(),
             version_name_2=version_name_2.lower())
+        return result
+
+    # ── Project Tags ─────────────────────────────────────────
+
+    async def get_project_tags(
+        self,
+        project_name: str,
+    ) -> dict:
+        """List tags associated with a project."""
+        cached = self.response_cache.get("get_project_tags",
+            project_name=project_name.lower())
+        if cached is not _SENTINEL:
+            return cached
+
+        project = await self._resolve_project(project_name)
+        project_url = project["_meta"]["href"]
+
+        # Tags are a sub-resource of the project; use the session directly
+        # because the SDK does not expose a "tags" named resource.
+        resp = await self._bd_call(
+            self.client.session.get,
+            f"{project_url}/tags",
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        tags = []
+        for tag in data.get("items", []):
+            tags.append(ProjectTagSummary(
+                name=tag.get("name", ""),
+            ).model_dump())
+
+        result = {
+            "project_name": project["name"],
+            "tags": tags,
+            "total": len(tags),
+        }
+        self.response_cache.put(result, "get_project_tags",
+            project_name=project_name.lower())
+        return result
+
+    # ── Policy Rules ─────────────────────────────────────────
+
+    async def list_policy_rules(
+        self,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> dict:
+        """List all policy rules configured in the system.
+
+        This is a system-level resource, so no project/version resolution
+        is needed.
+        """
+        cached = self.response_cache.get("list_policy_rules",
+            limit=limit, offset=offset)
+        if cached is not _SENTINEL:
+            return cached
+
+        # Policy rules live at the top-level API path, not under a project.
+        resp = await self._bd_call(
+            self.client.session.get,
+            f"{self.base_url}/api/policy-rules",
+            params={"limit": limit, "offset": offset},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        items = []
+        for rule in data.get("items", []):
+            items.append(PolicyRuleSummary(
+                name=rule.get("name", ""),
+                description=rule.get("description"),
+                enabled=rule.get("enabled", True),
+                severity=rule.get("severity", "UNSPECIFIED"),
+                category=rule.get("category"),
+                created_at=rule.get("createdAt"),
+                updated_at=rule.get("updatedAt"),
+            ).model_dump())
+
+        result = {
+            "policy_rules": items,
+            "total_available": data.get("totalCount", len(items)),
+            "total_returned": len(items),
+        }
+        self.response_cache.put(result, "list_policy_rules",
+            limit=limit, offset=offset)
+        return result
+
+    # ── KB Component Search ──────────────────────────────────
+
+    async def search_kb_components(
+        self,
+        query: str,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> dict:
+        """Search the Black Duck Knowledge Base for components.
+
+        The query string is passed directly to the BD API and supports
+        several formats:
+        - ``name:log4j`` — name substring search
+        - ``maven:org.apache.logging.log4j:log4j-core:2.4.1`` — coordinate search
+        - ``id:maven|org.apache.logging.log4j|log4j-core|2.4.1`` — exact ID lookup
+        """
+        cached = self.response_cache.get("search_kb_components",
+            query=query.lower(), limit=limit, offset=offset)
+        if cached is not _SENTINEL:
+            return cached
+
+        # KB component search is a global resource, not project-scoped.
+        resp = await self._bd_call(
+            self.client.session.get,
+            f"{self.base_url}/api/components",
+            params={"q": query, "limit": limit, "offset": offset},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        items = []
+        for comp in data.get("items", []):
+            licenses = []
+            for lic in comp.get("licenses", []):
+                licenses.append(
+                    lic.get("licenseDisplay", lic.get("spdxId", "Unknown"))
+                )
+
+            # KB endpoint uses "name" for component name (BOM uses "componentName").
+            items.append(KBComponentSummary(
+                component_name=comp.get("name", comp.get("componentName", "")),
+                version=comp.get("versionName"),
+                description=(comp.get("description", "") or "")[:500] or None,
+                origin_id=comp.get("originId"),
+                href=comp.get("_meta", {}).get("href"),
+                license_names=licenses if licenses else None,
+            ).model_dump())
+
+        result = {
+            "query": query,
+            "components": items,
+            "total_available": data.get("totalCount", len(items)),
+            "total_returned": len(items),
+        }
+        self.response_cache.put(result, "search_kb_components",
+            query=query.lower(), limit=limit, offset=offset)
+        return result
+
+    # ── Matched Files ────────────────────────────────────────
+
+    @staticmethod
+    def _normalize_matched_file(mf: dict) -> MatchedFileSummary:
+        """Convert a raw matched-file JSON object into a typed model."""
+        # filePath may be a plain string or a structured object with
+        # compositePathContext / path / archiveContext sub-fields.
+        file_path_obj = mf.get("filePath", {})
+        if isinstance(file_path_obj, str):
+            path = file_path_obj
+            archive = None
+        else:
+            path = file_path_obj.get("compositePathContext",
+                                     file_path_obj.get("path", ""))
+            archive = file_path_obj.get("archiveContext")
+
+        # Only the first usage entry is surfaced; most files have exactly one.
+        usages = mf.get("usages", [])
+        first_usage = usages[0] if usages else {}
+
+        return MatchedFileSummary(
+            file_path=path,
+            archive_context=archive,
+            component_name=mf.get("componentName", ""),
+            component_version=mf.get("componentVersionName"),
+            match_type=first_usage.get("matchType") if first_usage else None,
+            usage=first_usage.get("usage") if first_usage else None,
+        )
+
+    async def get_matched_files(
+        self,
+        project_name: str,
+        version_name: str | None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> dict:
+        """List files that matched to components during scanning."""
+        cached = self.response_cache.get("get_matched_files",
+            project_name=project_name.lower(),
+            version_name=(version_name or "_latest").lower(),
+            limit=limit, offset=offset)
+        if cached is not _SENTINEL:
+            return cached
+
+        project = await self._resolve_project(project_name)
+        version = await self._resolve_version(project, version_name)
+
+        # Matched files are a sub-resource of the version; use the session
+        # directly with server-side pagination (unlike vulnerable-bom-components).
+        version_url = version["_meta"]["href"]
+        resp = await self._bd_call(
+            self.client.session.get,
+            f"{version_url}/matched-files",
+            params={"limit": limit, "offset": offset},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        items = [self._normalize_matched_file(mf)
+                 for mf in data.get("items", [])]
+
+        result = MatchedFilesResponse(
+            project_name=project["name"],
+            version_name=version["versionName"],
+            total_available=data.get("totalCount", len(items)),
+            total_returned=len(items),
+            items=items,
+        ).model_dump()
+        self.response_cache.put(result, "get_matched_files",
+            project_name=project_name.lower(),
+            version_name=(version_name or "_latest").lower(),
+            limit=limit, offset=offset)
+        return result
+
+    # ── Hierarchical BOM Components ──────────────────────────
+
+    @staticmethod
+    def _normalize_hierarchical_component(
+        comp: dict,
+    ) -> HierarchicalBomComponentSummary:
+        """Convert a raw BOM component with origin details into a hierarchical model."""
+        licenses = []
+        license_risk = "UNKNOWN"
+        for lic in comp.get("licenses", []):
+            name = lic.get("licenseDisplay", lic.get("spdxId", "Unknown"))
+            licenses.append(name)
+            risk = lic.get("licenseRiskProfile", {}).get("riskType", "UNKNOWN")
+            if risk != "UNKNOWN":
+                license_risk = risk
+
+        # Classify dependency type from matchTypes.  BD uses values like
+        # FILE_DEPENDENCY_DIRECT, FILE_DEPENDENCY_TRANSITIVE, MANUAL, etc.
+        match_types = comp.get("matchTypes", [])
+        is_direct = None
+        is_transitive = None
+        if match_types:
+            is_direct = any("DIRECT" in mt or mt == "MANUAL" for mt in match_types)
+            is_transitive = any("TRANSITIVE" in mt for mt in match_types)
+
+        # Extract the first origin entry for namespace/ID details.
+        origins = comp.get("origins", [])
+        origin = origins[0] if origins else {}
+
+        # Sum non-OK vulnerability counts from the security risk profile.
+        vuln_counts = comp.get("securityRiskProfile", {}).get("counts", [])
+        vuln_total = sum(
+            c.get("count", 0) for c in vuln_counts
+            if c.get("countType", "OK") != "OK"
+        )
+
+        return HierarchicalBomComponentSummary(
+            component_name=comp.get("componentName", ""),
+            component_version=comp.get("componentVersionName", ""),
+            origin_name=comp.get("originName"),
+            origin_id=origin.get("originId"),
+            origin_external_namespace=origin.get("externalNamespace"),
+            origin_external_id=origin.get("externalId"),
+            match_types=match_types if match_types else None,
+            is_direct_dependency=is_direct,
+            is_transitive_dependency=is_transitive,
+            license_names=licenses,
+            license_risk=license_risk,
+            vulnerability_count=vuln_total,
+            policy_status=comp.get("policyStatus"),
+            component_source=comp.get("componentSource"),
+        )
+
+    async def get_hierarchical_components(
+        self,
+        project_name: str,
+        version_name: str | None,
+        filter_direct: bool | None = None,
+        query: str | None = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> dict:
+        """List BOM components with dependency hierarchy and origin details."""
+        cached = self.response_cache.get("get_hierarchical_components",
+            project_name=project_name.lower(),
+            version_name=(version_name or "_latest").lower(),
+            filter_direct=filter_direct,
+            query=(query or "").lower(),
+            limit=limit, offset=offset)
+        if cached is not _SENTINEL:
+            return cached
+
+        project = await self._resolve_project(project_name)
+        version = await self._resolve_version(project, version_name)
+
+        params: dict = {}
+        if query:
+            params["q"] = f"componentOrVersionName:{query}"
+
+        components = await self._bd_call(
+            self.client.get_resource,
+            "components", version, items=True, params=params,
+        )
+
+        # Two-pass approach: first count direct/transitive totals across
+        # all components, then apply the optional direct/transitive filter
+        # and manual pagination (same pattern as get_vulnerable_components).
+        results = []
+        total = 0
+        direct_count = 0
+        transitive_count = 0
+        for comp in components:
+            normalized = self._normalize_hierarchical_component(comp)
+
+            # Track overall counts before any filtering.
+            if normalized.is_direct_dependency:
+                direct_count += 1
+            if normalized.is_transitive_dependency:
+                transitive_count += 1
+
+            # Apply direct/transitive filter if requested.
+            if filter_direct is True and not normalized.is_direct_dependency:
+                continue
+            if filter_direct is False and not normalized.is_transitive_dependency:
+                continue
+
+            total += 1
+            if total > offset and len(results) < limit:
+                results.append(normalized)
+
+        result = HierarchicalBomResponse(
+            project_name=project["name"],
+            version_name=version["versionName"],
+            total_available=total,
+            total_returned=len(results),
+            direct_count=direct_count,
+            transitive_count=transitive_count,
+            items=results,
+        ).model_dump()
+        self.response_cache.put(result, "get_hierarchical_components",
+            project_name=project_name.lower(),
+            version_name=(version_name or "_latest").lower(),
+            filter_direct=filter_direct,
+            query=(query or "").lower(),
+            limit=limit, offset=offset)
+        return result
+
+    # ── Report Generation ────────────────────────────────────
+
+    async def generate_report(
+        self,
+        project_name: str,
+        version_name: str | None,
+        report_type: str = "SBOM",
+        report_format: str = "JSON",
+        categories: list[str] | None = None,
+    ) -> dict:
+        """Initiate report generation for a project version.
+
+        Returns a report URL that can be polled with ``get_report_status``.
+        """
+        project = await self._resolve_project(project_name)
+        version = await self._resolve_version(project, version_name)
+        version_url = version["_meta"]["href"]
+
+        # SBOM reports use a dedicated endpoint; standard version reports
+        # go through the generic reports endpoint.
+        if report_type == "SBOM":
+            url = f"{version_url}/sbom-reports"
+            post_data = {
+                "reportFormat": report_format,
+                "reportType": "SBOM",
+                "sbomType": "SPDX_22",
+            }
+        else:
+            url = f"{version_url}/reports"
+            post_data = {
+                "categories": categories or [
+                    "VERSION", "COMPONENTS", "SECURITY",
+                ],
+                "reportType": report_type,
+                "reportFormat": report_format,
+            }
+
+        # Report generation is asynchronous on the BD server; the POST
+        # returns 201 with a Location header pointing to the report resource.
+        resp = await self._bd_call(
+            self.client.session.post,
+            url,
+            json=post_data,
+        )
+        resp.raise_for_status()
+
+        # The Location header contains the URL to poll for report status.
+        report_url = resp.headers.get("Location", "")
+
+        return ReportGenerationResponse(
+            report_url=report_url,
+            project_name=project["name"],
+            version_name=version["versionName"],
+            report_type=report_type,
+            message=f"Report generation initiated. Poll status at: {report_url}",
+        ).model_dump()
+
+    async def get_report_status(
+        self,
+        report_url: str,
+    ) -> dict:
+        """Check the status of a previously initiated report.
+
+        No caching — status changes over time as the server generates
+        the report (IN_PROGRESS → COMPLETED or FAILED).
+        """
+        resp = await self._bd_call(
+            self.client.session.get,
+            report_url,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        # When the report is finished, look for a download link in _meta.
+        download_url = None
+        if data.get("status") == "COMPLETED":
+            for link in data.get("_meta", {}).get("links", []):
+                if link.get("rel") in ("download", "content"):
+                    download_url = link.get("href")
+                    break
+
+        # Extract the report ID from the trailing segment of the href.
+        report_id = None
+        href = data.get("_meta", {}).get("href", "")
+        if href:
+            report_id = href.rsplit("/", 1)[-1]
+
+        return ReportSummary(
+            report_id=report_id,
+            report_url=report_url,
+            report_type=data.get("reportType"),
+            report_format=data.get("reportFormat"),
+            status=data.get("status"),
+            created_at=data.get("createdAt"),
+            finished_at=data.get("finishedAt"),
+            content_type=data.get("contentType"),
+            download_url=download_url,
+        ).model_dump()
+
+    async def list_reports(
+        self,
+        project_name: str,
+        version_name: str | None,
+    ) -> dict:
+        """List reports for a project version."""
+        cached = self.response_cache.get("list_reports",
+            project_name=project_name.lower(),
+            version_name=(version_name or "_latest").lower())
+        if cached is not _SENTINEL:
+            return cached
+
+        project = await self._resolve_project(project_name)
+        version = await self._resolve_version(project, version_name)
+        version_url = version["_meta"]["href"]
+
+        resp = await self._bd_call(
+            self.client.session.get,
+            f"{version_url}/reports",
+            params={"limit": 100},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        # Extract report ID from href since the API does not return a
+        # top-level "id" field in report list items.
+        items = []
+        for report in data.get("items", []):
+            r_id = None
+            r_href = report.get("_meta", {}).get("href", "")
+            if r_href:
+                r_id = r_href.rsplit("/", 1)[-1]
+
+            items.append(ReportSummary(
+                report_id=r_id,
+                report_url=r_href or None,
+                report_type=report.get("reportType"),
+                report_format=report.get("reportFormat"),
+                status=report.get("status"),
+                created_at=report.get("createdAt"),
+                finished_at=report.get("finishedAt"),
+            ).model_dump())
+
+        result = {
+            "project_name": project["name"],
+            "version_name": version["versionName"],
+            "reports": items,
+            "total": len(items),
+        }
+        self.response_cache.put(result, "list_reports",
+            project_name=project_name.lower(),
+            version_name=(version_name or "_latest").lower())
         return result

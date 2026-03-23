@@ -13,7 +13,7 @@ from .client import (
     VulnerabilityNotFoundError,
 )
 
-mcp = FastMCP("Black Duck SCA")
+mcp = FastMCP("blackduck-assist")
 
 _client: BlackDuckClient | None = None
 
@@ -313,6 +313,149 @@ async def compare_versions(
         result = await _get_client().compare_versions(
             project_name, version_name_1, version_name_2,
         )
+        return json.dumps(result, indent=2)
+    except ProjectNotFoundError as e:
+        return _error_response(str(e), e.suggestions)
+    except VersionNotFoundError as e:
+        return _error_response(str(e), e.suggestions)
+    except Exception as e:
+        return _error_response(str(e))
+
+
+@mcp.tool()
+async def list_project_tags(
+    project_name: str,
+) -> str:
+    """List tags for a project. Shows all tags associated with a Black Duck project."""
+    try:
+        result = await _get_client().get_project_tags(project_name)
+        return json.dumps(result, indent=2)
+    except ProjectNotFoundError as e:
+        return _error_response(str(e), e.suggestions)
+    except Exception as e:
+        return _error_response(str(e))
+
+
+@mcp.tool()
+async def list_policy_rules(
+    limit: int = 20,
+    offset: int = 0,
+) -> str:
+    """List all policy rules configured in the Black Duck system. Shows rule name, severity, category, and enabled status."""
+    try:
+        result = await _get_client().list_policy_rules(limit=limit, offset=offset)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return _error_response(str(e))
+
+
+@mcp.tool()
+async def search_kb_components(
+    query: str,
+    limit: int = 20,
+    offset: int = 0,
+) -> str:
+    """Search the Black Duck Knowledge Base for components outside of a project context. Supports queries like 'name:log4j', 'maven:org.apache.logging.log4j:log4j-core:2.4.1', or 'id:maven|org.apache.logging.log4j|log4j-core|2.4.1'."""
+    try:
+        result = await _get_client().search_kb_components(
+            query=query, limit=limit, offset=offset,
+        )
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return _error_response(str(e))
+
+
+@mcp.tool()
+async def list_matched_files(
+    project_name: str,
+    version_name: str | None = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> str:
+    """List files that matched to components during scanning. Shows file path, component name, match type, and usage for a project version."""
+    try:
+        result = await _get_client().get_matched_files(
+            project_name, version_name,
+            limit=limit, offset=offset,
+        )
+        return json.dumps(result, indent=2)
+    except ProjectNotFoundError as e:
+        return _error_response(str(e), e.suggestions)
+    except VersionNotFoundError as e:
+        return _error_response(str(e), e.suggestions)
+    except Exception as e:
+        return _error_response(str(e))
+
+
+@mcp.tool()
+async def list_hierarchical_components(
+    project_name: str,
+    version_name: str | None = None,
+    filter_direct: bool | None = None,
+    query: str | None = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> str:
+    """List BOM components with dependency hierarchy details. Shows origin information, match types, and whether each component is a direct or transitive dependency. Use filter_direct=true for only direct dependencies, filter_direct=false for only transitive."""
+    try:
+        result = await _get_client().get_hierarchical_components(
+            project_name, version_name,
+            filter_direct=filter_direct, query=query,
+            limit=limit, offset=offset,
+        )
+        return json.dumps(result, indent=2)
+    except ProjectNotFoundError as e:
+        return _error_response(str(e), e.suggestions)
+    except VersionNotFoundError as e:
+        return _error_response(str(e), e.suggestions)
+    except Exception as e:
+        return _error_response(str(e))
+
+
+@mcp.tool()
+async def generate_report(
+    project_name: str,
+    version_name: str | None = None,
+    report_type: str = "SBOM",
+    report_format: str = "JSON",
+    categories: list[str] | None = None,
+) -> str:
+    """Generate a report for a project version. report_type can be 'SBOM' for SPDX SBOM, or 'VERSION' for a standard version report. report_format can be 'JSON' or 'CSV'. For VERSION reports, categories can include: VERSION, CODE_LOCATIONS, COMPONENTS, SECURITY, FILES, CRYPTO_ALGORITHMS, UPGRADE_GUIDANCE. Returns a report_url to poll for status using get_report_status."""
+    try:
+        result = await _get_client().generate_report(
+            project_name, version_name,
+            report_type=report_type, report_format=report_format,
+            categories=categories,
+        )
+        return json.dumps(result, indent=2)
+    except ProjectNotFoundError as e:
+        return _error_response(str(e), e.suggestions)
+    except VersionNotFoundError as e:
+        return _error_response(str(e), e.suggestions)
+    except Exception as e:
+        return _error_response(str(e))
+
+
+@mcp.tool()
+async def get_report_status(
+    report_url: str,
+) -> str:
+    """Check the status of a previously generated report. Pass the report_url returned by generate_report. Returns status (IN_PROGRESS, COMPLETED, FAILED) and download_url when completed."""
+    try:
+        result = await _get_client().get_report_status(report_url)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return _error_response(str(e))
+
+
+@mcp.tool()
+async def list_reports(
+    project_name: str,
+    version_name: str | None = None,
+) -> str:
+    """List all reports generated for a project version. Shows report type, format, status, and creation date."""
+    try:
+        result = await _get_client().list_reports(project_name, version_name)
         return json.dumps(result, indent=2)
     except ProjectNotFoundError as e:
         return _error_response(str(e), e.suggestions)
