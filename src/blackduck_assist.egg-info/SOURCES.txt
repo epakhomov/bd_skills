@@ -4,6 +4,7 @@ src/bd_skill/__init__.py
 src/bd_skill/cache.py
 src/bd_skill/client.py
 src/bd_skill/models.py
+src/bd_skill/profiles.py
 src/bd_skill/resolver.py
 src/bd_skill/server.py
 src/bd_skill/throttle.py

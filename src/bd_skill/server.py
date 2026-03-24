@@ -12,29 +12,22 @@ from .client import (
     VersionNotFoundError,
     VulnerabilityNotFoundError,
 )
+from .profiles import ProfileRegistry
 
 mcp = FastMCP("blackduck-assist")
 
-_client: BlackDuckClient | None = None
+_registry: ProfileRegistry | None = None
+
+
+def _get_registry() -> ProfileRegistry:
+    global _registry
+    if _registry is None:
+        _registry = ProfileRegistry()
+    return _registry
 
 
 def _get_client() -> BlackDuckClient:
-    global _client
-    if _client is None:
-        url = os.environ.get("BLACKDUCK_URL", "")
-        token = os.environ.get("BLACKDUCK_TOKEN", "")
-        if not url or not token:
-            raise RuntimeError(
-                "BLACKDUCK_URL and BLACKDUCK_TOKEN environment variables are required"
-            )
-        _client = BlackDuckClient(
-            url=url,
-            token=token,
-            verify_ssl=os.environ.get("BLACKDUCK_TLS_VERIFY", "true").lower() == "true",
-            timeout=int(os.environ.get("BD_TIMEOUT_SECONDS", "30")),
-            cache_ttl=int(os.environ.get("CACHE_TTL_SECONDS", "300")),
-        )
-    return _client
+    return _get_registry().get_client()
 
 
 def _error_response(message: str, suggestions: list[str] | None = None) -> str:
@@ -461,6 +454,49 @@ async def list_reports(
         return _error_response(str(e), e.suggestions)
     except VersionNotFoundError as e:
         return _error_response(str(e), e.suggestions)
+    except Exception as e:
+        return _error_response(str(e))
+
+
+# ── Profile management ─────────────────────────────────────────
+
+
+@mcp.tool()
+async def list_profiles() -> str:
+    """List all configured Black Duck profiles. Shows profile name, server URL, and which profile is currently active."""
+    try:
+        profiles = _get_registry().list_profiles()
+        return json.dumps(profiles, indent=2)
+    except Exception as e:
+        return _error_response(str(e))
+
+
+@mcp.tool()
+async def switch_profile(profile_name: str) -> str:
+    """Switch the active Black Duck profile. All subsequent tool calls will use this profile's connection."""
+    try:
+        _get_registry().switch(profile_name)
+        url = _get_registry().active_url
+        return json.dumps({
+            "status": "switched",
+            "active_profile": profile_name,
+            "url": url,
+        }, indent=2)
+    except ValueError as e:
+        return _error_response(str(e))
+    except Exception as e:
+        return _error_response(str(e))
+
+
+@mcp.tool()
+async def get_active_profile() -> str:
+    """Get the currently active Black Duck profile name and server URL."""
+    try:
+        registry = _get_registry()
+        return json.dumps({
+            "profile": registry.active_profile,
+            "url": registry.active_url,
+        }, indent=2)
     except Exception as e:
         return _error_response(str(e))
 

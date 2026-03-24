@@ -58,6 +58,57 @@ You should see `blackduck` listed. Start a new Claude Code session and the 16 to
 | `BD_TIMEOUT_SECONDS` | No | `30` | Request timeout |
 | `CACHE_TTL_SECONDS` | No | `300` | Name/response cache TTL |
 
+## Multi-Server Profiles
+
+If you work with multiple Black Duck instances (e.g. production and staging), you can configure named profiles instead of using environment variables.
+
+### Setup
+
+Create `~/.blackduck/profiles.yaml`:
+
+```yaml
+profiles:
+  prod:
+    url: https://bd-prod.example.com
+    token: "your-prod-api-token"
+    tls_verify: true       # optional, default: true
+    timeout: 30            # optional, default: 30
+    cache_ttl: 300         # optional, default: 300
+  staging:
+    url: https://bd-staging.example.com
+    token: "your-staging-api-token"
+
+default: prod   # optional — first profile is used if omitted
+```
+
+When a profiles file is present, environment variables are ignored. If no profiles file exists, the server falls back to `BLACKDUCK_URL` / `BLACKDUCK_TOKEN` environment variables (full backward compatibility).
+
+### Registration with Profiles
+
+When using profiles, you don't need to pass credentials via `-e` flags:
+
+```bash
+claude mcp add -s project \
+  blackduck \
+  -- /path/to/bd_skill/.venv/bin/blackduck-assist
+```
+
+### Profile Management Tools
+
+| Tool | Description |
+|------|-------------|
+| `list_profiles` | List all configured profiles with server URLs and active status |
+| `switch_profile` | Switch the active profile — subsequent tool calls use the new connection |
+| `get_active_profile` | Show the currently active profile name and server URL |
+
+### Switching Profiles
+
+Ask Claude naturally:
+
+- "Switch to the staging profile"
+- "Which Black Duck profile am I connected to?"
+- "List my Black Duck profiles"
+
 ## Available Tools
 
 ### Navigation
@@ -157,8 +208,9 @@ bd_skill/
 │       └── SKILL.md            # /policy_violations slash command
 └── src/
     └── bd_skill/
-        ├── server.py           # MCP server + 16 tool definitions
+        ├── server.py           # MCP server + tool definitions
         ├── client.py           # Async Black Duck API wrapper
+        ├── profiles.py         # Multi-profile configuration and registry
         ├── models.py           # Pydantic response models
         ├── cache.py            # Name and response caching
         ├── resolver.py         # Fuzzy project/version name matching
