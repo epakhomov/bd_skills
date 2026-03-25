@@ -12,11 +12,13 @@ from .client import (
     VersionNotFoundError,
     VulnerabilityNotFoundError,
 )
+from .detect import DetectRunner
 from .profiles import ProfileRegistry
 
 mcp = FastMCP("blackduck-assist")
 
 _registry: ProfileRegistry | None = None
+_detect_runner: DetectRunner | None = None
 
 
 def _get_registry() -> ProfileRegistry:
@@ -28,6 +30,13 @@ def _get_registry() -> ProfileRegistry:
 
 def _get_client() -> BlackDuckClient:
     return _get_registry().get_client()
+
+
+def _get_detect_runner() -> DetectRunner:
+    global _detect_runner
+    if _detect_runner is None:
+        _detect_runner = DetectRunner()
+    return _detect_runner
 
 
 def _error_response(message: str, suggestions: list[str] | None = None) -> str:
@@ -454,6 +463,72 @@ async def list_reports(
         return _error_response(str(e), e.suggestions)
     except VersionNotFoundError as e:
         return _error_response(str(e), e.suggestions)
+    except Exception as e:
+        return _error_response(str(e))
+
+
+# ── Detect scan tools ──────────────────────────────────────────
+
+
+@mcp.tool()
+async def run_detect_scan(
+    source_path: str,
+    project_name: str | None = None,
+    version_name: str | None = None,
+    scan_mode: str | None = None,
+    detect_tools: str | None = None,
+    search_depth: int | None = None,
+    code_location_name: str | None = None,
+    additional_args: list[str] | None = None,
+) -> str:
+    """Run a Black Duck Detect scan on the specified source path. Credentials (URL, token) and TLS settings are taken from the active Black Duck profile. The scan runs asynchronously — use get_detect_scan_status to poll for completion. scan_mode can be INTELLIGENT (full) or RAPID (quick). detect_tools is a comma-separated list like 'DETECTOR,SIGNATURE_SCAN'. additional_args accepts extra Detect properties like ['--detect.cleanup=false']."""
+    try:
+        registry = _get_registry()
+        registry._ensure_loaded()
+        cfg = registry._profiles[registry._active]
+
+        scan_id = await _get_detect_runner().start_scan(
+            blackduck_url=cfg.url,
+            blackduck_token=cfg.token,
+            source_path=source_path,
+            project_name=project_name,
+            version_name=version_name,
+            scan_mode=scan_mode,
+            detect_tools=detect_tools,
+            search_depth=search_depth,
+            code_location_name=code_location_name,
+            tls_verify=cfg.tls_verify,
+            additional_args=additional_args,
+        )
+        status = _get_detect_runner().get_scan_status(scan_id)
+        return json.dumps(status, indent=2)
+    except (FileNotFoundError, ValueError, RuntimeError) as e:
+        return _error_response(str(e))
+    except Exception as e:
+        return _error_response(str(e))
+
+
+@mcp.tool()
+async def get_detect_scan_status(
+    scan_id: str,
+    log_lines: int = 50,
+) -> str:
+    """Get the status and recent log output of a Detect scan. Returns status (STARTING, RUNNING, COMPLETED, FAILED), return code, and the last N lines of output."""
+    try:
+        result = _get_detect_runner().get_scan_status(scan_id, log_lines=log_lines)
+        return json.dumps(result, indent=2)
+    except KeyError as e:
+        return _error_response(str(e))
+    except Exception as e:
+        return _error_response(str(e))
+
+
+@mcp.tool()
+async def list_detect_scans() -> str:
+    """List all Detect scans started in this session. Shows scan ID, status, source path, and timing for each scan."""
+    try:
+        scans = _get_detect_runner().list_scans()
+        return json.dumps({"scans": scans, "total": len(scans)}, indent=2)
     except Exception as e:
         return _error_response(str(e))
 

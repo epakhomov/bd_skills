@@ -8,6 +8,7 @@ An MCP (Model Context Protocol) server that gives Claude Code access to your Bla
 - A Black Duck server with API access
 - A Black Duck API token
 - Claude Code CLI
+- Java 17+ (required only for running Detect scans)
 
 ## Installation
 
@@ -135,6 +136,13 @@ Ask Claude naturally:
 | `list_licenses` | Licenses grouped by risk level |
 | `list_policy_violations` | Components violating policy rules |
 
+### Detect Scanning
+| Tool | Description |
+|------|-------------|
+| `run_detect_scan` | Run a Black Duck Detect scan on a source path. Returns a scan ID for polling. |
+| `get_detect_scan_status` | Get status and log output of a running or completed Detect scan |
+| `list_detect_scans` | List all Detect scans started in this session |
+
 ### Advanced
 | Tool | Description |
 |------|-------------|
@@ -177,6 +185,42 @@ cp -r skills/policy_violations ~/.claude/skills/
 
 Restart Claude Code for the commands to appear in `/help`.
 
+## Running Detect Scans
+
+The MCP server can kick off Black Duck Detect scans directly. Detect is auto-downloaded on first use — no manual installation required (Java 17+ must be available).
+
+### How it works
+
+1. **`run_detect_scan`** starts the scan asynchronously and returns a scan ID immediately
+2. **`get_detect_scan_status`** polls for progress and retrieves log output
+3. **`list_detect_scans`** shows all scans in the current session
+
+Credentials (URL, token, TLS settings) are automatically injected from the active profile — you never need to pass them.
+
+### Parameters
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `source_path` | Yes | Path to the source code directory to scan |
+| `project_name` | No | Black Duck project name (auto-detected from source if omitted) |
+| `version_name` | No | Project version name |
+| `scan_mode` | No | `INTELLIGENT` (full) or `RAPID` (quick) |
+| `detect_tools` | No | Comma-separated list, e.g. `DETECTOR,SIGNATURE_SCAN` |
+| `search_depth` | No | How deep to search for package manager files |
+| `code_location_name` | No | Custom code location name |
+| `additional_args` | No | Extra Detect properties, e.g. `["--detect.cleanup=false"]` |
+
+### Natural language examples
+
+- "Scan the current project with Black Duck Detect"
+- "Run a rapid scan on /path/to/my-app"
+- "Kick off a Detect scan for my-app version 2.0"
+- "Check the status of my Detect scan"
+
+### Detect script management
+
+The Detect CLI script (`detect10.sh`) is automatically downloaded from `https://detect.blackduck.com/detect10.sh` to `~/.blackduck/detect/` on first use. Subsequent scans reuse the cached script.
+
 ## Usage Examples
 
 Once registered, just ask Claude naturally:
@@ -186,6 +230,7 @@ Once registered, just ask Claude naturally:
 - "Which projects are affected by CVE-2021-44228?"
 - "Compare v2.0 and v3.0 of api-gateway"
 - "What GPL-licensed components are in my-app?"
+- "Run a Detect scan on this project"
 
 Claude will automatically resolve project names (with fuzzy matching), navigate to the right version, and call the appropriate tools.
 
@@ -210,6 +255,7 @@ bd_skill/
     └── bd_skill/
         ├── server.py           # MCP server + tool definitions
         ├── client.py           # Async Black Duck API wrapper
+        ├── detect.py           # Detect CLI runner (download, execute, track scans)
         ├── profiles.py         # Multi-profile configuration and registry
         ├── models.py           # Pydantic response models
         ├── cache.py            # Name and response caching

@@ -342,3 +342,25 @@ class ReportGenerationResponse(BaseModel):
     version_name: str
     report_type: str
     message: str
+
+
+# ── Detect scan models ───────────────────────────────────────
+
+
+class DetectScanSummary(BaseModel):
+    """High-level status for a Detect scan."""
+    scan_id: str
+    status: str  # STARTING, RUNNING, COMPLETED, FAILED
+    source_path: str
+    project_name: str | None = None
+    version_name: str | None = None
+    started_at: str
+    finished_at: str | None = None
+    return_code: int | None = None
+
+
+class DetectScanDetail(DetectScanSummary):
+    """Full detail for a Detect scan, including log output."""
+    log_tail: list[str]
+    total_log_lines: int
+    command_preview: str
